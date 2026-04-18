@@ -16,7 +16,8 @@ const seedData = async () => {
     if (existingAdmin) {
       console.log('⚠️  Un administrateur existe déjà — seeding arrêté.');
       console.log(`👤 Admin existant: ${existingAdmin.username}`);
-      process.exit(0);
+      //process.exit(0);
+      return; // Just return to avoid exiting the whole server if this is called on startup
     }
 
     // Clear existing matches and users (safe because no admin exists)
