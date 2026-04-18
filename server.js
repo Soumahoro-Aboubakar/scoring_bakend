@@ -1,6 +1,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+require('dotenv').config();
 
 const matchRoutes = require('./routes/matches');
 const authRoutes = require('./routes/auth');
@@ -8,7 +9,7 @@ const statsRoutes = require('./routes/stats');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/architect_football';
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/a90rchitect_football';
 
 // Middleware
 app.use(cors());
@@ -27,7 +28,7 @@ app.get('/api/health', (req, res) => {
 // Connect to MongoDB and start server
 mongoose.connect(MONGO_URI)
   .then(() => {
-    console.log('✅ MongoDB connecté');
+    console.log('✅ MongoDB connecté' , MONGO_URI);
     app.listen(PORT, () => {
       console.log(`🚀 Serveur démarré sur http://localhost:${PORT}`);
     });

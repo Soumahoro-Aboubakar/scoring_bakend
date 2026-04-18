@@ -1,22 +1,32 @@
 const mongoose = require('mongoose');
 const Match = require('./models/Match');
 const User = require('./models/User');
+require('dotenv').config();
 
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/architect_football';
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/a90rchitect_football';  
 
 const seedData = async () => {
   try {
+    console.log('🔌 Connecting to MongoDB...  ', MONGO_URI);
     await mongoose.connect(MONGO_URI);
     console.log('✅ MongoDB connecté pour le seeding');
 
-    // Clear existing data
+    // Check if an admin already exists; if so, abort seeding to avoid overwriting
+    const existingAdmin = await User.findOne({ role: 'admin' }).exec();
+    if (existingAdmin) {
+      console.log('⚠️  Un administrateur existe déjà — seeding arrêté.');
+      console.log(`👤 Admin existant: ${existingAdmin.username}`);
+      process.exit(0);
+    }
+
+    // Clear existing matches and users (safe because no admin exists)
     await Match.deleteMany({});
     await User.deleteMany({});
 
     // Create admin
     const admin = new User({
-      username: 'admin',
-      password: 'admin123',
+      username:  process.env.USERNAME || 'admin',
+      password: process.env.PASSWORD || 'admin123',
       role: 'admin',
       socialLinks: { telegram: 'https://t.me/architect_pronostics', tiktok: 'https://tiktok.com/@architect_pronostics' },
       shareMessage: '🔥 Découvrez le ticket du jour sur ARCHITECT ! Rejoignez-nous pour des pronostics fiables.'
@@ -31,7 +41,7 @@ const seedData = async () => {
     const threeDaysAgo = new Date(today); threeDaysAgo.setDate(today.getDate() - 3);
     const fourDaysAgo = new Date(today); fourDaysAgo.setDate(today.getDate() - 4);
     const fiveDaysAgo = new Date(today); fiveDaysAgo.setDate(today.getDate() - 5);
-
+/*
     const matches = [
       // Today matches
       {
@@ -187,7 +197,7 @@ const seedData = async () => {
         odds: 1.70,
         result: { status: 'notbet', score: '1 - 1' }
       }
-    ];
+    ];*/
 
     await Match.insertMany(matches);
     console.log(`⚽ ${matches.length} matchs insérés`);

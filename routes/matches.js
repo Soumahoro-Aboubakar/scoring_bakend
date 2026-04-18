@@ -24,6 +24,17 @@ const buildMatchFilter = ({ date, competition, status, bestPicks, search, recomm
   if (status && status !== 'all') {
     if (status === 'completed') {
       filter['result.status'] = { $in: ['won', 'lost', 'notbet'] };
+    } else if (status === 'pending') {
+      filter['result.status'] = 'pending';
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      // Merge with existing date filter if any so we don't accidentally overwrite it
+      if (!filter.matchDate) {
+        filter.matchDate = { $gte: today };
+      } else if (filter.matchDate.$gte < today) {
+        filter.matchDate.$gte = today;
+      }
     } else {
       filter['result.status'] = status;
     }
@@ -81,8 +92,8 @@ router.get('/home', async (req, res) => {
 
     const dates = await Match.aggregate([
       { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$matchDate' } }, count: { $sum: 1 } } },
-      { $sort: { _id: 1 } },
-      { $limit: 7 }
+      { $sort: { _id: -1 } },
+      { $limit: 60 }
     ]);
 
     const topMatches = await Match.find({
@@ -162,7 +173,7 @@ router.get('/', async (req, res) => {
 
     const total = await Match.countDocuments(filter);
     const matches = await Match.find(filter)
-      .sort({ matchDate: 1, matchTime: 1, 'predictions.safe.confidence': -1 })
+      .sort({ matchDate: -1, matchTime: -1, 'predictions.safe.confidence': -1 })
       .skip(parseInt(skip) || 0)
       .limit(parseInt(limit) || 50);
 
@@ -250,6 +261,74 @@ router.post('/', authMiddleware, async (req, res) => {
     res.status(201).json(serializeMatch(match));
   } catch (error) {
     res.status(400).json({ message: error.message });
+  }
+});
+
+// POST /api/matches/bulk — admin only: accepts an array of match JSON objects
+router.post('/bulk', authMiddleware, async (req, res) => {
+  try {
+    // ensure admin role
+    if (!req.user || req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Accès refusé' });
+    }
+
+    const items = req.body;
+    if (!Array.isArray(items)) {
+      return res.status(400).json({ message: 'Payload doit être un tableau de matches JSON' });
+    }
+
+    const results = { total: items.length, saved: 0, skippedDuplicates: 0, failed: 0, failedItems: [] };
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      try {
+        // Basic structure check using the Mongoose model validators
+        const candidate = new Match(item);
+        // validate (will throw if invalid)
+        await candidate.validate();
+
+        // Normalize matchDate to a Date object for duplicate check
+        const matchDate = item.matchDate ? new Date(item.matchDate) : null;
+
+        // Duplicate check: same home, away, matchDate (time-insensitive) and matchTime
+        const query = {
+          'homeTeam.name': item.homeTeam?.name,
+          'awayTeam.name': item.awayTeam?.name,
+          matchTime: item.matchTime
+        };
+
+        if (matchDate) {
+          // match exact timestamp if provided
+          query.matchDate = matchDate;
+        }
+
+        const exists = await Match.findOne(query).exec();
+        if (exists) {
+          results.skippedDuplicates += 1;
+          continue;
+        }
+
+        await candidate.save();
+        results.saved += 1;
+      } catch (err) {
+        results.failed += 1;
+        // Provide a helpful reason
+        const reason = err && err.message ? err.message : 'Invalid structure';
+        results.failedItems.push({ index: i, item, reason });
+        // continue to next
+        continue;
+      }
+    }
+
+    res.json({
+      total: results.total,
+      saved: results.saved,
+      skippedDuplicates: results.skippedDuplicates,
+      failed: results.failed,
+      failedItems: results.failedItems
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 });
 
