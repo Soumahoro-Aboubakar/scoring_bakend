@@ -6,6 +6,8 @@ require('dotenv').config();
 const matchRoutes = require('./routes/matches');
 const authRoutes = require('./routes/auth');
 const statsRoutes = require('./routes/stats');
+const automationRoutes = require('./routes/automation');
+const { startScheduler } = require('./jobs/scheduler');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -21,6 +23,7 @@ app.use(express.json());
 app.use('/api/matches', matchRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/stats', statsRoutes);
+app.use('/api/automation', automationRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -39,6 +42,7 @@ mongoose.connect(MONGO_URI)
 
 app.listen(PORT, () => {
   console.log(`🚀 Serveur démarré sur http://localhost:${PORT}`);
+  startScheduler();
 
   // Seed uniquement si activé
   if (process.env.SEED === 'true') {
@@ -55,8 +59,9 @@ app.listen(PORT, () => {
 
   setInterval(async () => {
     try {
-      const res = await axios.get(`${BACKEND_URL}/api/health`);
-      console.log('🔄 Ping serveur OK:', res.data.status);
+      const res = await fetch(`${BACKEND_URL}/api/health`);
+      const data = await res.json();
+      console.log('🔄 Ping serveur OK:', data.status);
     } catch (err) {
       console.error('❌ Ping échoué:', err.message);
     }

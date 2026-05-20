@@ -3,6 +3,7 @@ const Match = require('../models/Match');
 const User = require('../models/User');
 const { authMiddleware } = require('../middleware/auth');
 const { serializeMatch } = require('../utils/matchPresentation');
+const { clearPublicCache, publicCache } = require('../utils/cache');
 
 const router = express.Router();
 
@@ -70,7 +71,7 @@ const buildMatchFilter = ({ date, competition, status, bestPicks, search, recomm
 };
 
 // GET /api/matches/home — public homepage payload
-router.get('/home', async (req, res) => {
+router.get('/home', publicCache(90 * 1000), async (req, res) => {
   try {
     const { date, page = 1 } = req.query;
 
@@ -90,55 +91,61 @@ router.get('/home', async (req, res) => {
 
     const dateFilter = { matchDate: { $gte: startOfDay, $lte: endOfDay } };
 
-    const dates = await Match.aggregate([
-      { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$matchDate' } }, count: { $sum: 1 } } },
-      { $sort: { _id: -1 } },
-      { $limit: 60 }
-    ]);
-
-    const topMatches = await Match.find({
-      ...dateFilter,
-      'predictions.safe.confidence': { $gte: 80 },
-      'predictions.notBet': false
-    })
-      .sort({ 'predictions.safe.confidence': -1, matchDate: 1, matchTime: 1 })
-      .limit(8);
-
     const pageInt = parseInt(page, 10);
     const limitParams = 20;
     const skipParams = Math.max(0, (pageInt - 1) * limitParams);
 
-    const upcomingMatches = await Match.find({
-      ...dateFilter,
-      'predictions.notBet': false
-    })
-      .sort({ matchDate: 1, matchTime: 1 })
-      .skip(skipParams)
-      .limit(limitParams + 1);
+    const [dates, topMatches, upcomingMatchesRaw, recentResults, ticketForDate] = await Promise.all([
+      Match.aggregate([
+        { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$matchDate' } }, count: { $sum: 1 } } },
+        { $sort: { _id: -1 } },
+        { $limit: 60 }
+      ]),
+      Match.find({
+        ...dateFilter,
+        'predictions.safe.confidence': { $gte: 80 },
+        'predictions.notBet': false
+      })
+        .sort({ 'predictions.safe.confidence': -1, matchDate: 1, matchTime: 1 })
+        .limit(8)
+        .lean(),
+      Match.find({
+        ...dateFilter,
+        'predictions.notBet': false
+      })
+        .sort({ matchDate: 1, matchTime: 1 })
+        .skip(skipParams)
+        .limit(limitParams + 1)
+        .lean(),
+      Match.find({
+        ...dateFilter,
+        'result.status': { $in: ['won', 'lost', 'notbet'] }
+      })
+        .sort({ matchDate: -1, updatedAt: -1 })
+        .limit(6)
+        .lean(),
+      Match.find({
+        isDailyTicket: true,
+        ...dateFilter
+      })
+        .sort({ matchDate: 1, matchTime: 1 })
+        .limit(4)
+        .lean()
+    ]);
 
+    const upcomingMatches = [...upcomingMatchesRaw];
     const hasMoreUpcoming = upcomingMatches.length > limitParams;
     if (hasMoreUpcoming) upcomingMatches.pop();
 
-    const recentResults = await Match.find({
-      ...dateFilter,
-      'result.status': { $in: ['won', 'lost', 'notbet'] }
-    })
-      .sort({ matchDate: -1, updatedAt: -1 })
-      .limit(6);
-
-    let dailyTicketMatches = await Match.find({
-      isDailyTicket: true,
-      ...dateFilter
-    })
-      .sort({ matchDate: 1, matchTime: 1 })
-      .limit(4);
+    let dailyTicketMatches = ticketForDate;
 
     // Provide fallback conditionally. If specifically querying a date and no ticket exists, maybe we shouldn't fallback.
     // However, if it's "today" default behavior, fallback is fine. We'll fallback only if `!date`.
     if (dailyTicketMatches.length === 0 && !date) {
       dailyTicketMatches = await Match.find({ isDailyTicket: true })
         .sort({ matchDate: -1, matchTime: -1 })
-        .limit(4);
+        .limit(4)
+        .lean();
     }
 
     const totalConfidence = dailyTicketMatches.length
@@ -166,16 +173,19 @@ router.get('/home', async (req, res) => {
 });
 
 // GET /api/matches — public, with filters
-router.get('/', async (req, res) => {
+router.get('/', publicCache(60 * 1000), async (req, res) => {
   try {
     const { date, competition, status, bestPicks, search, limit, skip, recommendation } = req.query;
     const filter = buildMatchFilter({ date, competition, status, bestPicks, search, recommendation });
 
-    const total = await Match.countDocuments(filter);
-    const matches = await Match.find(filter)
-      .sort({ matchDate: -1, matchTime: -1, 'predictions.safe.confidence': -1 })
-      .skip(parseInt(skip) || 0)
-      .limit(parseInt(limit) || 50);
+    const [total, matches] = await Promise.all([
+      Match.countDocuments(filter),
+      Match.find(filter)
+        .sort({ matchDate: -1, matchTime: -1, 'predictions.safe.confidence': -1 })
+        .skip(parseInt(skip) || 0)
+        .limit(parseInt(limit) || 50)
+        .lean()
+    ]);
 
     res.json({ matches: matches.map(serializeMatch), total });
   } catch (error) {
@@ -184,7 +194,7 @@ router.get('/', async (req, res) => {
 });
 
 // GET /api/matches/daily-ticket — public
-router.get('/daily-ticket', async (req, res) => {
+router.get('/daily-ticket', publicCache(90 * 1000), async (req, res) => {
   try {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -194,13 +204,14 @@ router.get('/daily-ticket', async (req, res) => {
     let tickets = await Match.find({
       isDailyTicket: true,
       matchDate: { $gte: today, $lt: tomorrow }
-    }).limit(4);
+    }).limit(4).lean();
 
     // If no tickets for today, get the most recent ones
     if (tickets.length === 0) {
       tickets = await Match.find({ isDailyTicket: true })
         .sort({ matchDate: -1 })
-        .limit(4);
+        .limit(4)
+        .lean();
     }
 
     const totalConfidence = tickets.length > 0
@@ -214,7 +225,7 @@ router.get('/daily-ticket', async (req, res) => {
 });
 
 // GET /api/matches/dates — returns available dates
-router.get('/dates', async (req, res) => {
+router.get('/dates', publicCache(5 * 60 * 1000), async (req, res) => {
   try {
     const dates = await Match.aggregate([
       { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$matchDate' } }, count: { $sum: 1 } } },
@@ -228,9 +239,9 @@ router.get('/dates', async (req, res) => {
 });
 
 // GET /api/matches/:id — public
-router.get('/:id', async (req, res) => {
+router.get('/:id', publicCache(5 * 60 * 1000), async (req, res) => {
   try {
-    const match = await Match.findById(req.params.id);
+    const match = await Match.findById(req.params.id).lean();
     if (!match) return res.status(404).json({ message: 'Match non trouvé' });
     res.json(serializeMatch(match));
   } catch (error) {
@@ -247,6 +258,7 @@ router.put('/admin/settings', authMiddleware, async (req, res) => {
       { socialLinks, shareMessage },
       { new: true }
     ).select('-password');
+    clearPublicCache();
     res.json(user);
   } catch (error) {
     res.status(400).json({ message: error.message });
@@ -258,6 +270,7 @@ router.post('/', authMiddleware, async (req, res) => {
   try {
     const match = new Match(req.body);
     await match.save();
+    clearPublicCache();
     res.status(201).json(serializeMatch(match));
   } catch (error) {
     res.status(400).json({ message: error.message });
@@ -320,6 +333,7 @@ router.post('/bulk', authMiddleware, async (req, res) => {
       }
     }
 
+    clearPublicCache();
     res.json({
       total: results.total,
       saved: results.saved,
@@ -337,6 +351,7 @@ router.put('/:id', authMiddleware, async (req, res) => {
   try {
     const match = await Match.findByIdAndUpdate(req.params.id, req.body, { new: true });
     if (!match) return res.status(404).json({ message: 'Match non trouvé' });
+    clearPublicCache();
     res.json(serializeMatch(match));
   } catch (error) {
     res.status(400).json({ message: error.message });
@@ -347,12 +362,21 @@ router.put('/:id', authMiddleware, async (req, res) => {
 router.put('/:id/result', authMiddleware, async (req, res) => {
   try {
     const { status, score } = req.body;
+    const scoreMatch = String(score || '').match(/(\d{1,2})\s*-\s*(\d{1,2})/);
     const match = await Match.findByIdAndUpdate(
       req.params.id,
-      { 'result.status': status, 'result.score': score || '' },
+      {
+        'result.status': status,
+        'result.score': score || '',
+        'result.homeGoals': scoreMatch ? Number(scoreMatch[1]) : null,
+        'result.awayGoals': scoreMatch ? Number(scoreMatch[2]) : null,
+        'automation.validationStatus': status === 'pending' ? 'pending' : 'validated',
+        'automation.pipelineStatus': status === 'pending' ? 'analyzed' : 'validated',
+      },
       { new: true }
     );
     if (!match) return res.status(404).json({ message: 'Match non trouvé' });
+    clearPublicCache();
     res.json(serializeMatch(match));
   } catch (error) {
     res.status(400).json({ message: error.message });
@@ -364,6 +388,7 @@ router.delete('/:id', authMiddleware, async (req, res) => {
   try {
     const match = await Match.findByIdAndDelete(req.params.id);
     if (!match) return res.status(404).json({ message: 'Match non trouvé' });
+    clearPublicCache();
     res.json({ message: 'Match supprimé' });
   } catch (error) {
     res.status(500).json({ message: error.message });

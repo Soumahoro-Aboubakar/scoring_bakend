@@ -1,3 +1,5 @@
+const { enrichPrediction } = require('../services/predictionEngine');
+
 const getRecommendationType = (label = '') => {
   const normalized = label.toLowerCase();
 
@@ -25,9 +27,10 @@ const getMatchStatusLabel = (status = 'pending') => {
 };
 
 const serializeMatch = (match) => {
-  const data = typeof match.toObject === 'function' ? match.toObject() : match;
-  const recommendationType = getRecommendationType(data.predictions?.safe?.label);
-  const confidence = data.predictions?.safe?.confidence || 0;
+  const data = enrichPrediction(match);
+  const primaryLabel = data.predictions?.primary?.label || data.predictions?.safe?.label;
+  const recommendationType = getRecommendationType(primaryLabel);
+  const confidence = data.predictions?.primary?.confidence || data.predictions?.safe?.confidence || 0;
 
   return {
     ...data,

@@ -1,21 +1,22 @@
 const express = require('express');
 const Match = require('../models/Match');
+const { publicCache } = require('../utils/cache');
 
 const router = express.Router();
 
 // GET /api/stats/global
-router.get('/global', async (req, res) => {
+router.get('/global', publicCache(90 * 1000), async (req, res) => {
   try {
-    const total = await Match.countDocuments({ 'result.status': { $ne: 'pending' } });
-    const won = await Match.countDocuments({ 'result.status': 'won' });
-    const lost = await Match.countDocuments({ 'result.status': 'lost' });
-    const notbet = await Match.countDocuments({ 'result.status': 'notbet' });
-    const pending = await Match.countDocuments({ 'result.status': 'pending' });
-
-    const successRate = total > 0 ? Math.round((won / (won + lost)) * 100 * 10) / 10 : 0;
-
-    // Stats by bet type
-    const byType = await Match.aggregate([
+    const [total, won, lost, notbet, pending, exactScoreWon, partialWon, validated, byType] = await Promise.all([
+      Match.countDocuments({ 'result.status': { $ne: 'pending' } }),
+      Match.countDocuments({ 'result.status': 'won' }),
+      Match.countDocuments({ 'result.status': 'lost' }),
+      Match.countDocuments({ 'result.status': 'notbet' }),
+      Match.countDocuments({ 'result.status': 'pending' }),
+      Match.countDocuments({ 'validation.exactScoreCorrect': true }),
+      Match.countDocuments({ 'validation.partialCorrect': true }),
+      Match.countDocuments({ 'automation.validationStatus': 'validated' }),
+      Match.aggregate([
       { $match: { 'result.status': { $in: ['won', 'lost'] } } },
       { $group: {
         _id: '$predictions.safe.label',
@@ -24,23 +25,44 @@ router.get('/global', async (req, res) => {
       }},
       { $sort: { total: -1 } },
       { $limit: 10 }
+    ])
     ]);
 
-    res.json({ total: total + pending, won, lost, notbet, pending, successRate, byType });
+    const successRate = (won + lost) > 0 ? Math.round((won / (won + lost)) * 100 * 10) / 10 : 0;
+
+    const exactScoreRate = validated > 0 ? Math.round((exactScoreWon / validated) * 100 * 10) / 10 : 0;
+    const partialRate = validated > 0 ? Math.round((partialWon / validated) * 100 * 10) / 10 : 0;
+
+    res.json({
+      total: total + pending,
+      won,
+      lost,
+      notbet,
+      pending,
+      successRate,
+      validation: {
+        validated,
+        exactScoreWon,
+        partialWon,
+        exactScoreRate,
+        partialRate,
+      },
+      byType
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 });
 
 // GET /api/stats/daily/:date
-router.get('/daily/:date', async (req, res) => {
+router.get('/daily/:date', publicCache(90 * 1000), async (req, res) => {
   try {
     const start = new Date(req.params.date);
     start.setHours(0, 0, 0, 0);
     const end = new Date(req.params.date);
     end.setHours(23, 59, 59, 999);
 
-    const matches = await Match.find({ matchDate: { $gte: start, $lte: end } });
+    const matches = await Match.find({ matchDate: { $gte: start, $lte: end } }).select('result.status').lean();
     const won = matches.filter(m => m.result.status === 'won').length;
     const lost = matches.filter(m => m.result.status === 'lost').length;
     const pending = matches.filter(m => m.result.status === 'pending').length;
@@ -54,7 +76,7 @@ router.get('/daily/:date', async (req, res) => {
 });
 
 // GET /api/stats/chart — weekly performance for chart
-router.get('/chart', async (req, res) => {
+router.get('/chart', publicCache(5 * 60 * 1000), async (req, res) => {
   try {
     const { period } = req.query; // '7' or '30'
     const days = parseInt(period) || 30;
@@ -86,7 +108,7 @@ router.get('/chart', async (req, res) => {
 });
 
 // GET /api/stats/admin — admin info (social links, etc.)
-router.get('/admin-info', async (req, res) => {
+router.get('/admin-info', publicCache(5 * 60 * 1000), async (req, res) => {
   try {
     const User = require('../models/User');
     const admin = await User.findOne({ role: 'admin' }).select('socialLinks shareMessage');
